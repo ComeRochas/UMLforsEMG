@@ -96,7 +96,8 @@ def evaluate(model: BaselineModel, loader: DataLoader,
         text_int = batch['text_int']
         t_lengths = batch['text_int_lengths']
 
-        out = model(raw_emg)
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            out = model(raw_emg)
         log_probs = out['log_probs']                # (B, T, V)
 
         decoded = decode_greedy(log_probs, blank)
@@ -132,6 +133,11 @@ def main(config_path: str) -> None:
     # Reproducibility
     torch.manual_seed(42)
 
+    # Perf flags — big win on H100/A100
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'[startup] device={device}', flush=True)
@@ -164,8 +170,10 @@ def main(config_path: str) -> None:
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
     )
@@ -173,8 +181,10 @@ def main(config_path: str) -> None:
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
 
@@ -205,11 +215,15 @@ def main(config_path: str) -> None:
     # ---------------------------------------------------------------------------
     # W&B
     # ---------------------------------------------------------------------------
-    wandb.init(
-        project=cfg_logging['wandb_project'],
-        name='baseline',
-        config=cfg,
-    )
+    wandb_init_kwargs = {
+        'project': cfg_logging['wandb_project'],
+        'name': 'baseline',
+        'config': cfg,
+        'mode': 'offline',
+    }
+    if cfg_logging.get('wandb_entity'):
+        wandb_init_kwargs['entity'] = cfg_logging['wandb_entity']
+    wandb.init(**wandb_init_kwargs)
     wandb.watch(model, log_freq=200)
     print(f'[wandb] initialized project={cfg_logging["wandb_project"]}', flush=True)
 
@@ -245,16 +259,16 @@ def main(config_path: str) -> None:
             lengths      = batch['lengths'].to(device)           # (B,) EMG frames
             t_lengths    = batch['text_int_lengths'].to(device)  # (B,)
 
-            out  = model(
-                raw_emg,
-                return_loss=True,
-                targets=text_int,
-                input_lengths=lengths,
-                target_lengths=t_lengths,
-            )
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                out  = model(
+                    raw_emg,
+                    return_loss=True,
+                    targets=text_int,
+                    input_lengths=lengths,
+                    target_lengths=t_lengths,
+                )
             loss = out['loss']
-
-            optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()

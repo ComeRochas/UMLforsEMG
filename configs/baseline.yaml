@@ -4,17 +4,19 @@ model:
   dropout: 0.1
 
 training:
-  batch_size: 8
+  batch_size: 64
   learning_rate: 3.0e-4
-  warmup_steps: 1000
-  n_epochs: 200
+  warmup_steps: 500
+  n_epochs: 60
   l2: 0.0
-  lr_milestones: [125, 150, 175]
+  lr_milestones: [40, 50]
   lr_gamma: 0.5
+  log_every_steps: 20
 
 data:
   emg_data_dir: /scratch/cr4206/data/emg_data/emg_data
 
 logging:
-  wandb_project: silent_speech_uml
+  wandb_entity: UMLforVideoLab
+  wandb_project: UMLvsBaseline
   checkpoint_dir: /scratch/cr4206/checkpoints

@@ -90,6 +90,11 @@ def main(config_path: str, uml_checkpoint: str) -> None:
     cfg_logging  = cfg['logging']
 
     torch.manual_seed(42)
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     ckpt_dir = os.path.join(cfg_logging['checkpoint_dir'], 'finetune')
@@ -113,8 +118,10 @@ def main(config_path: str, uml_checkpoint: str) -> None:
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
     )
@@ -122,8 +129,10 @@ def main(config_path: str, uml_checkpoint: str) -> None:
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
 
@@ -155,11 +164,15 @@ def main(config_path: str, uml_checkpoint: str) -> None:
     # ---------------------------------------------------------------------------
     # W&B
     # ---------------------------------------------------------------------------
-    wandb.init(
-        project=cfg_logging['wandb_project'],
-        name='finetune_from_uml',
-        config={**cfg, 'uml_checkpoint': uml_checkpoint},
-    )
+    wandb_init_kwargs = {
+        'project': cfg_logging['wandb_project'],
+        'name': 'finetune_from_uml',
+        'config': {**cfg, 'uml_checkpoint': uml_checkpoint},
+        'mode': 'offline',
+    }
+    if cfg_logging.get('wandb_entity'):
+        wandb_init_kwargs['entity'] = cfg_logging['wandb_entity']
+    wandb.init(**wandb_init_kwargs)
     wandb.watch(model, log_freq=200)
 
     # ---------------------------------------------------------------------------
@@ -192,16 +205,16 @@ def main(config_path: str, uml_checkpoint: str) -> None:
             lengths   = batch['lengths'].to(device)
             t_lengths = batch['text_int_lengths'].to(device)
 
-            out  = model(
-                raw_emg,
-                return_loss=True,
-                targets=text_int,
-                input_lengths=lengths,
-                target_lengths=t_lengths,
-            )
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                out  = model(
+                    raw_emg,
+                    return_loss=True,
+                    targets=text_int,
+                    input_lengths=lengths,
+                    target_lengths=t_lengths,
+                )
             loss = out['loss']
-
-            optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()

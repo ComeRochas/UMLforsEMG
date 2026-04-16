@@ -82,7 +82,8 @@ def evaluate(model: UMLModel, loader: DataLoader,
         text_int  = batch['text_int']
         t_lengths = batch['text_int_lengths']
 
-        out = model.forward_emg(raw_emg)
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            out = model.forward_emg(raw_emg)
         decoded = decode_greedy(out['log_probs'], blank)
         for i, pred_ints in enumerate(decoded):
             hyp = text_transform.int_to_text(pred_ints)
@@ -125,6 +126,10 @@ def main(config_path: str) -> None:
 
     torch.manual_seed(42)
 
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Checkpoint dir
@@ -160,6 +165,8 @@ def main(config_path: str) -> None:
         shuffle=True,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
     )
@@ -169,6 +176,8 @@ def main(config_path: str) -> None:
         shuffle=True,
         num_workers=4,
         pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
         collate_fn=LibriSpeechCharDataset.collate_fn,
         drop_last=True,
     )
@@ -178,6 +187,8 @@ def main(config_path: str) -> None:
         shuffle=False,
         num_workers=2,
         pin_memory=True,
+        prefetch_factor=2,
+        persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
 
@@ -209,11 +220,15 @@ def main(config_path: str) -> None:
     # ---------------------------------------------------------------------------
     # W&B
     # ---------------------------------------------------------------------------
-    wandb.init(
-        project=cfg_logging['wandb_project'],
-        name='uml',
-        config=cfg,
-    )
+    wandb_init_kwargs = {
+        'project': cfg_logging['wandb_project'],
+        'name': 'uml',
+        'config': cfg,
+        'mode': 'offline',
+    }
+    if cfg_logging.get('wandb_entity'):
+        wandb_init_kwargs['entity'] = cfg_logging['wandb_entity']
+    wandb.init(**wandb_init_kwargs)
     wandb.watch(model, log_freq=200)
 
     # ---------------------------------------------------------------------------
@@ -257,13 +272,14 @@ def main(config_path: str) -> None:
             lengths   = emg_batch['lengths'].to(device)
             t_lengths = emg_batch['text_int_lengths'].to(device)
 
-            emg_out  = model.forward_emg(
-                raw_emg,
-                return_loss=True,
-                targets=text_int,
-                input_lengths=lengths,
-                target_lengths=t_lengths,
-            )
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                emg_out  = model.forward_emg(
+                    raw_emg,
+                    return_loss=True,
+                    targets=text_int,
+                    input_lengths=lengths,
+                    target_lengths=t_lengths,
+                )
             loss_emg = emg_out['loss']
 
             # Accumulate (divide by 2 for gradient accumulation over 2 sub-steps)
@@ -276,9 +292,10 @@ def main(config_path: str) -> None:
             a_t_lengths   = audio_batch['text_int_lengths'].to(device)
             audio_lengths = audio_batch['audio_lengths'].to(device)
 
-            audio_out = model.forward_audio(
-                waveform, a_text_int, a_t_lengths, audio_lengths=audio_lengths
-            )
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                audio_out = model.forward_audio(
+                    waveform, a_text_int, a_t_lengths, audio_lengths=audio_lengths
+                )
             loss_audio  = audio_out['loss']
 
             combined = lambda_uml * loss_audio

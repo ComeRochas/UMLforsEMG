@@ -168,7 +168,7 @@ def main(checkpoint_path: str, config_path: str, split: str,
     blank          = blank_id(text_transform)
 
     dataset = EMGCharDataset(
-        emg_data_dir=cfg_data['emg_data_dir'],
+        cache_path=cfg_data['emg_cache_dir'],
         split=split,
     )
     loader = DataLoader(
