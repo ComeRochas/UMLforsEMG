@@ -22,7 +22,7 @@ import wandb
 import jiwer
 
 # ---------------------------------------------------------------------------
-# Project root on sys.path (for read_emg / data_utils / transformer imports)
+# Project root on sys.path (for data_utils import)
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
@@ -154,10 +154,10 @@ def main(config_path: str) -> None:
     n_vocab        = vocab_size(text_transform)
     blank          = blank_id(text_transform)
 
-    emg_data_dir = cfg_data['emg_data_dir']
+    emg_cache_dir = cfg_data['emg_cache_dir']
 
-    train_dataset = EMGCharDataset(emg_data_dir=emg_data_dir, split='train')
-    val_dataset   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev')
+    train_dataset = EMGCharDataset(cache_path=emg_cache_dir, split='train')
+    val_dataset   = EMGCharDataset(cache_path=emg_cache_dir, split='dev')
     print(
         f'[data] train_samples={len(train_dataset)} val_samples={len(val_dataset)} '
         f'batch_size={cfg_training["batch_size"]}',
@@ -166,13 +166,14 @@ def main(config_path: str) -> None:
 
     batch_size = cfg_training['batch_size']
 
+    # Data is already in memory (precomputed). num_workers=2 + persistent
+    # workers keeps the next batch's pad/stack overlapped with GPU compute.
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=8,
+        num_workers=2,
         pin_memory=True,
-        prefetch_factor=4,
         persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
@@ -181,9 +182,8 @@ def main(config_path: str) -> None:
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True,
-        prefetch_factor=2,
         persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
@@ -278,7 +278,7 @@ def main(config_path: str) -> None:
             epoch_loss  += loss.item()
             n_batches   += 1
 
-            if n_batches % log_every_steps == 0:
+            if global_step % log_every_steps == 0:
                 lr = optimizer.param_groups[0]['lr']
                 elapsed = time.time() - epoch_start
                 print(
@@ -287,8 +287,6 @@ def main(config_path: str) -> None:
                     f'lr={lr:.2e} elapsed={elapsed:.1f}s',
                     flush=True,
                 )
-
-            if global_step % 50 == 0:
                 wandb.log({'train/loss': loss.item(), 'step': global_step})
 
         # Epoch-level LR decay — update the closure variable so LambdaLR

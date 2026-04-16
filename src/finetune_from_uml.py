@@ -88,6 +88,7 @@ def main(config_path: str, uml_checkpoint: str) -> None:
     cfg_training = cfg['training']
     cfg_data     = cfg['data']
     cfg_logging  = cfg['logging']
+    log_every_steps = int(cfg_training.get('log_every_steps', 200))
 
     torch.manual_seed(42)
 
@@ -107,10 +108,10 @@ def main(config_path: str, uml_checkpoint: str) -> None:
     n_vocab        = vocab_size(text_transform)
     blank          = blank_id(text_transform)
 
-    emg_data_dir = cfg_data['emg_data_dir']
+    emg_cache_dir = cfg_data['emg_cache_dir']
 
-    train_dataset = EMGCharDataset(emg_data_dir=emg_data_dir, split='train')
-    val_dataset   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev')
+    train_dataset = EMGCharDataset(cache_path=emg_cache_dir, split='train')
+    val_dataset   = EMGCharDataset(cache_path=emg_cache_dir, split='dev')
 
     batch_size = cfg_training['batch_size']
 
@@ -118,9 +119,8 @@ def main(config_path: str, uml_checkpoint: str) -> None:
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=8,
+        num_workers=2,
         pin_memory=True,
-        prefetch_factor=4,
         persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
@@ -129,9 +129,8 @@ def main(config_path: str, uml_checkpoint: str) -> None:
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True,
-        prefetch_factor=2,
         persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
@@ -224,7 +223,13 @@ def main(config_path: str, uml_checkpoint: str) -> None:
             epoch_loss  += loss.item()
             n_batches   += 1
 
-            if global_step % 50 == 0:
+            if global_step % log_every_steps == 0:
+                lr = optimizer.param_groups[0]['lr']
+                print(
+                    f'[train] epoch={epoch+1} batch={n_batches} '
+                    f'step={global_step} loss={loss.item():.4f} lr={lr:.2e}',
+                    flush=True,
+                )
                 wandb.log({'train/loss': loss.item(), 'step': global_step})
 
         if epoch + 1 in milestones:

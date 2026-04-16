@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=ssl_uml
 #SBATCH --account=torch_pr_39_tandon_advanced
-#SBATCH --partition=h100_tandon
-#SBATCH --gres=gpu:h100:1
+#SBATCH --partition=l40s_public
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -42,7 +42,21 @@ trap cleanup EXIT
 # Paths
 # ---------------------------------------------------------------------------
 export SCRATCH=/scratch/cr4206
-export EMG_DATA_DIR=${SCRATCH}/data/emg_data
+
+# Cache dirs (populated in advance by src/precompute_emg.py and
+# src/precompute_audio.py; see README).
+EMG_CACHE_DIR=${SCRATCH}/data/emg_cache
+LIBRI_CACHE_DIR=${SCRATCH}/data/libri_cache
+if [ ! -f "${EMG_CACHE_DIR}/train.pt" ] || [ ! -f "${EMG_CACHE_DIR}/dev.pt" ]; then
+    echo "[error] EMG cache not found under ${EMG_CACHE_DIR}"
+    echo "        Run src/precompute_emg.py before submitting this job."
+    exit 1
+fi
+if [ ! -f "${LIBRI_CACHE_DIR}/train-clean-100.pt" ]; then
+    echo "[error] LibriSpeech cache not found under ${LIBRI_CACHE_DIR}"
+    echo "        Run src/precompute_audio.py before submitting this job."
+    exit 1
+fi
 
 mkdir -p ${SCRATCH}/logs \
          ${SCRATCH}/checkpoints/uml \
@@ -59,7 +73,7 @@ export TRANSFORMERS_CACHE=${SCRATCH}/.cache/huggingface
 export TORCH_HOME=${SCRATCH}/.cache/torch
 export WANDB_DIR=${SCRATCH}/.cache/wandb
 export PIP_CACHE_DIR=${SCRATCH}/.cache/pip
-export WANDB_MODE=online
+export WANDB_MODE=offline
 export PYTHONUNBUFFERED=1
 
 # ---------------------------------------------------------------------------

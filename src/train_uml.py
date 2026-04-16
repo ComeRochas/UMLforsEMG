@@ -123,6 +123,7 @@ def main(config_path: str) -> None:
     cfg_data     = cfg['data']
     cfg_logging  = cfg['logging']
     cfg_uml      = cfg['uml']
+    log_every_steps = int(cfg_training.get('log_every_steps', 200))
 
     torch.manual_seed(42)
 
@@ -143,29 +144,30 @@ def main(config_path: str) -> None:
     n_vocab        = vocab_size(text_transform)
     blank          = blank_id(text_transform)
 
-    emg_data_dir    = cfg_data['emg_data_dir']
-    librispeech_dir = cfg_data['librispeech_dir']
+    emg_cache_dir        = cfg_data['emg_cache_dir']
+    librispeech_cache_dir = cfg_data['librispeech_cache_dir']
+    libri_split          = cfg_data.get('librispeech_split', 'train-clean-100')
 
-    # EMG datasets
-    emg_train = EMGCharDataset(emg_data_dir=emg_data_dir, split='train')
-    emg_val   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev')
+    # EMG datasets (precomputed cache)
+    emg_train = EMGCharDataset(cache_path=emg_cache_dir, split='train')
+    emg_val   = EMGCharDataset(cache_path=emg_cache_dir, split='dev')
 
-    # LibriSpeech dataset (shared text_transform for consistent vocab)
+    # LibriSpeech dataset (precomputed cache)
     libri_train = LibriSpeechCharDataset(
-        librispeech_dir=librispeech_dir,
-        splits=['train-clean-100'],
-        text_transform=text_transform,
+        cache_path=librispeech_cache_dir,
+        split=libri_split,
     )
 
     batch_size = cfg_training['batch_size']
 
+    # All datasets are already in memory (precomputed).  num_workers=2 is
+    # enough to hide pad/stack behind GPU compute.
     emg_loader = DataLoader(
         emg_train,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True,
-        prefetch_factor=4,
         persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
@@ -174,9 +176,8 @@ def main(config_path: str) -> None:
         libri_train,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=2,
         pin_memory=True,
-        prefetch_factor=4,
         persistent_workers=True,
         collate_fn=LibriSpeechCharDataset.collate_fn,
         drop_last=True,
@@ -187,7 +188,6 @@ def main(config_path: str) -> None:
         shuffle=False,
         num_workers=2,
         pin_memory=True,
-        prefetch_factor=2,
         persistent_workers=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
@@ -312,7 +312,14 @@ def main(config_path: str) -> None:
             epoch_audio_loss += loss_audio.item()
             n_batches        += 1
 
-            if global_step % 50 == 0:
+            if global_step % log_every_steps == 0:
+                lr = optimizer.param_groups[0]['lr']
+                print(
+                    f'[train] epoch={epoch+1} batch={n_batches} '
+                    f'step={global_step} emg_loss={loss_emg.item():.4f} '
+                    f'audio_loss={loss_audio.item():.4f} lr={lr:.2e}',
+                    flush=True,
+                )
                 wandb.log({
                     'train/emg_loss':   loss_emg.item(),
                     'train/audio_loss': loss_audio.item(),

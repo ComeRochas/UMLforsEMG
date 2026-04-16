@@ -11,10 +11,10 @@ training:
   l2: 0.0
   lr_milestones: [40, 50]
   lr_gamma: 0.5
-  log_every_steps: 20
+  log_every_steps: 200
 
 data:
-  emg_data_dir: /scratch/cr4206/data/emg_data/emg_data
+  emg_cache_dir: /scratch/cr4206/data/emg_cache
 
 logging:
   wandb_entity: UMLforVideoLab

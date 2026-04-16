@@ -19,7 +19,8 @@ Evaluation on `dev`/`test`: [src/evaluate.py](src/evaluate.py).
 ```
 src/
   precompute_emg.py        ← run ONCE on CPU to produce train.pt / dev.pt / test.pt
-  data.py                  ← EMGCharDataset (cache reader) + LibriSpeechCharDataset
+  precompute_audio.py      ← run ONCE on CPU to produce train-clean-100.pt
+  data.py                  ← EMGCharDataset + LibriSpeechCharDataset (both cache readers)
   model.py                 ← EMGEncoder, AudioEncoder, SharedTransformer, CTCHead, BaselineModel, UMLModel
   train_baseline.py
   train_uml.py
@@ -41,13 +42,13 @@ environment.yml
 
 ## Why there's a precompute step
 
-Gaddy's live `__getitem__` does ~10× more CPU work per sample than our model
-actually consumes (`get_emg_features`, MFCC/librosa audio, TextGrid phonemes,
+Gaddy's live EMG `__getitem__` does ~10× more CPU work per sample than the
+model consumes (`get_emg_features`, MFCC/librosa audio, TextGrid phonemes,
 mfcc/emg normalizers, silent→voiced parallel lookup, per-sample pinning).
-At batch size 8 on L40S/H100, that was starving the GPU
-(≥ 15 s/step even on H100).
+LibriSpeech's live `__getitem__` spends its time in FLAC decoding + per-sample
+Wav2Vec2 normalization. Both were starving the GPU.
 
-[src/precompute_emg.py](src/precompute_emg.py) runs the signal chain **once**
+[src/precompute_emg.py](src/precompute_emg.py) runs the EMG signal chain **once**
 on CPU and materializes only what the model needs:
 
 * notch harmonics (60 Hz × 1..7) + 2 Hz highpass drift-removal
@@ -56,9 +57,21 @@ on CPU and materializes only what the model needs:
 * cap at 6400 frames (`limit_length=True`)
 * char-level `text_int`
 
-Result: `train.pt` / `dev.pt` / `test.pt`, each a dict `{raw_emg, text_int}`
-with fp16 EMG tensors. Total ≈ 1 GB. At train time, `__getitem__` is a list
-lookup — CPU cost per batch collapses and the GPU is no longer starved.
+[src/precompute_audio.py](src/precompute_audio.py) does the same for
+LibriSpeech:
+
+* FLAC decode → fp32 waveform (+ resample to 16 kHz if needed — a no-op for
+  LibriSpeech)
+* per-sample zero-mean / unit-variance normalization (same formula as
+  `Wav2Vec2FeatureExtractor`, so we can drop `transformers` from the
+  runtime path)
+* char-level `text_int`
+
+Result at `$SCRATCH/data/emg_cache/{split}.pt` and
+`$SCRATCH/data/libri_cache/{split}.pt` — each a dict of fp16 tensors.  EMG:
+~1 GB total. LibriSpeech `train-clean-100`: ~11 GB. At train time,
+`__getitem__` is a list lookup on both branches — CPU cost per batch
+collapses and the GPU is no longer starved.
 
 ## Data pipeline quick reference
 
@@ -66,11 +79,11 @@ lookup — CPU cost per batch collapses and the GPU is no longer starved.
 |---|---|---|
 | Download Gaddy sEMG + LibriSpeech | [scripts/download_data.sh](scripts/download_data.sh) | ~4 GB + ~6 GB, extracted to `$SCRATCH/data/` |
 | Precompute EMG cache | [src/precompute_emg.py](src/precompute_emg.py) | **CPU-only, one-shot**, ~10–20 min on 8 cores |
-| Train | `src/train_*.py` | reads `$SCRATCH/data/emg_cache/{split}.pt` |
+| Precompute audio cache | [src/precompute_audio.py](src/precompute_audio.py) | **CPU-only, one-shot** (UML only), ~15–30 min on 8 cores |
+| Train | `src/train_*.py` | reads `$SCRATCH/data/{emg_cache,libri_cache}/*.pt` |
 
-LibriSpeech still goes through live `LibriSpeechCharDataset`
-([src/data.py](src/data.py)) — flac decode + wav2vec2 processor — but it only
-matters for the UML audio branch. Baseline and finetune don't touch it.
+Baseline and finetune only read the EMG cache; `precompute_audio.py` is only
+needed before running `train_uml.py`.
 
 ## How to run
 
@@ -112,6 +125,21 @@ $SCRATCH/data/emg_cache/dev.pt
 $SCRATCH/data/emg_cache/test.pt
 ```
 
+### 1b. Precompute LibriSpeech tensors (CPU only — only needed before `train_uml`)
+
+Skip this step if you're only running baseline + finetune.
+
+```bash
+python -u src/precompute_audio.py \
+    --librispeech_dir $SCRATCH/data/librispeech \
+    --out_dir         $SCRATCH/data/libri_cache \
+    --splits          train-clean-100 \
+    --num_workers     8
+```
+
+Writes `$SCRATCH/data/libri_cache/train-clean-100.pt` (~11 GB).  Expected
+runtime: **~15–30 min** on 8 CPU cores.
+
 ### 2. Train the baseline
 
 ```bash
@@ -135,7 +163,8 @@ sbatch slurm/train_uml.slurm
 ```
 
 Reads both the EMG cache (`$SCRATCH/data/emg_cache/`) and the LibriSpeech
-tree (`$SCRATCH/data/librispeech/LibriSpeech/train-clean-100/...`).
+cache (`$SCRATCH/data/libri_cache/train-clean-100.pt`).  The slurm script
+pre-flight-checks both and aborts with a clear error if either is missing.
 
 ### 4. Fine-tune from a UML checkpoint
 
@@ -181,14 +210,27 @@ Change `model_size` / `num_layers` / `batch_size` / `n_epochs` in
 [configs/uml.yaml](configs/uml.yaml). UML adds a `uml.lambda_uml`
 (default 0.5) scaling the auxiliary audio loss.
 
+## Where to change common settings
+
+| Setting | File |
+|---|---|
+| `n_epochs`, `batch_size`, `learning_rate`, `log_every_steps`, `lr_milestones` | [configs/baseline.yaml](configs/baseline.yaml) / [configs/uml.yaml](configs/uml.yaml) |
+| GPU type / partition (`#SBATCH --partition=`, `--gres=gpu:...`) | [slurm/train_baseline.slurm](slurm/train_baseline.slurm), [slurm/train_uml.slurm](slurm/train_uml.slurm), [slurm/finetune_from_uml.slurm](slurm/finetune_from_uml.slurm) |
+| Cache locations (`emg_cache_dir`, `librispeech_cache_dir`) | the same YAML configs |
+| UML audio loss weight (`lambda_uml`) | [configs/uml.yaml](configs/uml.yaml) |
+
+A submitted slurm job freezes its config at submission time — change the
+YAML and re-submit to pick up new values.
+
 ## When to re-precompute
 
 Only if any of these change:
 
-* the filter params in `src/precompute_emg.py` (notch Q, highpass cutoff, subsample rate)
-* the `TextTransform` vocabulary
-* `testset_largedev.json` (dev/test definition)
-* the `LIMIT_LENGTH_MAX_RAW` cap
+* EMG: filter params in `src/precompute_emg.py` (notch Q, highpass cutoff,
+  subsample rate), or the `LIMIT_LENGTH_MAX_RAW` cap
+* Audio: the normalization formula in `src/precompute_audio.py`
+* the `TextTransform` vocabulary (affects both caches)
+* `testset_largedev.json` (dev/test definition — EMG only)
 
 Architecture / model size / batch size / LR changes do **not** require
 re-precomputing.
