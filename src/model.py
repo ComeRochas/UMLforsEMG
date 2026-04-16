@@ -72,7 +72,7 @@ class EMGEncoder(nn.Module):
     Output: (B, T_raw // 8, model_size)
     """
 
-    def __init__(self, model_size: int = 768):
+    def __init__(self, model_size: int = 256):
         super().__init__()
         self.model_size = model_size
 
@@ -120,7 +120,7 @@ class AudioEncoder(nn.Module):
 
     WAV2VEC2_MODEL = 'facebook/wav2vec2-base'
 
-    def __init__(self, model_size: int = 768):
+    def __init__(self, model_size: int = 256):
         super().__init__()
         self.model_size = model_size
 
@@ -307,9 +307,9 @@ class BaselineModel(nn.Module):
     def __init__(
         self,
         vocab_size:  int,
-        model_size:  int   = 768,
-        num_layers:  int   = 6,
-        dropout:     float = 0.2,
+        model_size:  int   = 256,
+        num_layers:  int   = 4,
+        dropout:     float = 0.1,
     ):
         super().__init__()
         self.encoder     = EMGEncoder(model_size=model_size)
@@ -379,9 +379,9 @@ class UMLModel(nn.Module):
     def __init__(
         self,
         vocab_size:  int,
-        model_size:  int   = 768,
-        num_layers:  int   = 6,
-        dropout:     float = 0.2,
+        model_size:  int   = 256,
+        num_layers:  int   = 4,
+        dropout:     float = 0.1,
     ):
         super().__init__()
         self.emg_encoder   = EMGEncoder(model_size=model_size)
