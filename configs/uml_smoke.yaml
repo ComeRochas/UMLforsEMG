@@ -1,0 +1,35 @@
+# Smoke config: 1-epoch UML run over the full caches to validate the pipeline
+# end-to-end before committing an H100 job.  Intended for L40S.
+#
+# Requires both caches to exist first:
+#   - EMG:         /scratch/cr4206/data/emg_cache/{train,dev}.pt
+#   - LibriSpeech: /scratch/cr4206/data/librispeech_features/*.pt (+ index.pt)
+# Produced by slurm/precompute_caches.slurm.
+
+model:
+  model_size: 256
+  num_layers: 4
+  dropout: 0.1
+
+training:
+  batch_size: 32
+  learning_rate: 3.0e-4
+  warmup_steps: 500
+  n_epochs: 1
+  l2: 0.0
+  lr_milestones: [40, 50]
+  lr_gamma: 0.5
+  log_every_steps: 20
+
+data:
+  emg_data_dir:             /scratch/cr4206/data/emg_data/emg_data
+  emg_cache_dir:            /scratch/cr4206/data/emg_cache
+  librispeech_features_dir: /scratch/cr4206/data/librispeech_features
+
+logging:
+  wandb_entity:   UMLforVideoLab
+  wandb_project:  UMLvsBaseline
+  checkpoint_dir: /scratch/cr4206/checkpoints/smoke
+
+uml:
+  lambda_uml: 0.5

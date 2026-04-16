@@ -1,0 +1,28 @@
+name: silent_speech_uml
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - tqdm
+  - pyyaml
+  # PyTorch with CUDA 12.1 — installed via official pytorch+nvidia channels
+  - pytorch=2.2.2
+  - torchaudio=2.2.2
+  - pytorch-cuda=12.1
+  - matplotlib
+  - pip:
+    - transformers==4.40.2
+    - pyctcdecode>=0.5.0
+    - jiwer==3.0.3
+    - wandb
+    - absl-py
+    - librosa
+    - soundfile
+    - praat-textgrids
+    - unidecode
