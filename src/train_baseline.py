@@ -96,8 +96,7 @@ def evaluate(model: BaselineModel, loader: DataLoader,
         text_int = batch['text_int']
         t_lengths = batch['text_int_lengths']
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            out = model(raw_emg)
+        out = model(raw_emg)
         log_probs = out['log_probs']                # (B, T, V)
 
         decoded = decode_greedy(log_probs, blank)
@@ -133,11 +132,6 @@ def main(config_path: str) -> None:
     # Reproducibility
     torch.manual_seed(42)
 
-    # Perf flags — big win on H100/A100
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-
     # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'[startup] device={device}', flush=True)
@@ -154,16 +148,10 @@ def main(config_path: str) -> None:
     n_vocab        = vocab_size(text_transform)
     blank          = blank_id(text_transform)
 
-    emg_data_dir  = cfg_data['emg_data_dir']
-    emg_cache_dir = cfg_data.get('emg_cache_dir', None)
+    emg_data_dir = cfg_data['emg_data_dir']
 
-    def _cache_path(split):
-        return os.path.join(emg_cache_dir, f'{split}.pt') if emg_cache_dir else None
-
-    train_dataset = EMGCharDataset(emg_data_dir=emg_data_dir, split='train',
-                                   cache_path=_cache_path('train'))
-    val_dataset   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev',
-                                   cache_path=_cache_path('dev'))
+    train_dataset = EMGCharDataset(emg_data_dir=emg_data_dir, split='train')
+    val_dataset   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev')
     print(
         f'[data] train_samples={len(train_dataset)} val_samples={len(val_dataset)} '
         f'batch_size={cfg_training["batch_size"]}',
@@ -172,12 +160,11 @@ def main(config_path: str) -> None:
 
     batch_size = cfg_training['batch_size']
 
-    # num_workers=0: data is already in RAM (cache), no IPC overhead needed.
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=4,
         pin_memory=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
@@ -186,7 +173,7 @@ def main(config_path: str) -> None:
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=2,
         pin_memory=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
@@ -218,15 +205,11 @@ def main(config_path: str) -> None:
     # ---------------------------------------------------------------------------
     # W&B
     # ---------------------------------------------------------------------------
-    wandb_init_kwargs = {
-        'project': cfg_logging['wandb_project'],
-        'name': 'baseline',
-        'config': cfg,
-        'mode': 'offline',
-    }
-    if cfg_logging.get('wandb_entity'):
-        wandb_init_kwargs['entity'] = cfg_logging['wandb_entity']
-    wandb.init(**wandb_init_kwargs)
+    wandb.init(
+        project=cfg_logging['wandb_project'],
+        name='baseline',
+        config=cfg,
+    )
     wandb.watch(model, log_freq=200)
     print(f'[wandb] initialized project={cfg_logging["wandb_project"]}', flush=True)
 
@@ -262,16 +245,16 @@ def main(config_path: str) -> None:
             lengths      = batch['lengths'].to(device)           # (B,) EMG frames
             t_lengths    = batch['text_int_lengths'].to(device)  # (B,)
 
-            optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                out  = model(
-                    raw_emg,
-                    return_loss=True,
-                    targets=text_int,
-                    input_lengths=lengths,
-                    target_lengths=t_lengths,
-                )
+            out  = model(
+                raw_emg,
+                return_loss=True,
+                targets=text_int,
+                input_lengths=lengths,
+                target_lengths=t_lengths,
+            )
             loss = out['loss']
+
+            optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()

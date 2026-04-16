@@ -36,7 +36,6 @@ if _PROJECT_ROOT not in sys.path:
 from src.data import (
     EMGCharDataset,
     LibriSpeechCharDataset,
-    LibriSpeechFeatureDataset,
     build_text_transform,
     vocab_size,
     blank_id,
@@ -83,8 +82,7 @@ def evaluate(model: UMLModel, loader: DataLoader,
         text_int  = batch['text_int']
         t_lengths = batch['text_int_lengths']
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            out = model.forward_emg(raw_emg)
+        out = model.forward_emg(raw_emg)
         decoded = decode_greedy(out['log_probs'], blank)
         for i, pred_ints in enumerate(decoded):
             hyp = text_transform.int_to_text(pred_ints)
@@ -127,10 +125,6 @@ def main(config_path: str) -> None:
 
     torch.manual_seed(42)
 
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Checkpoint dir
@@ -144,40 +138,19 @@ def main(config_path: str) -> None:
     n_vocab        = vocab_size(text_transform)
     blank          = blank_id(text_transform)
 
-    emg_data_dir              = cfg_data['emg_data_dir']
-    emg_cache_dir             = cfg_data.get('emg_cache_dir', None)
-    librispeech_dir           = cfg_data.get('librispeech_dir', None)
-    librispeech_features_dir  = cfg_data.get('librispeech_features_dir', None)
-
-    def _cache_path(split):
-        return os.path.join(emg_cache_dir, f'{split}.pt') if emg_cache_dir else None
+    emg_data_dir    = cfg_data['emg_data_dir']
+    librispeech_dir = cfg_data['librispeech_dir']
 
     # EMG datasets
-    emg_train = EMGCharDataset(emg_data_dir=emg_data_dir, split='train',
-                                cache_path=_cache_path('train'))
-    emg_val   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev',
-                                cache_path=_cache_path('dev'))
+    emg_train = EMGCharDataset(emg_data_dir=emg_data_dir, split='train')
+    emg_val   = EMGCharDataset(emg_data_dir=emg_data_dir, split='dev')
 
-    # LibriSpeech: prefer precomputed wav2vec2 features when available.
-    use_feature_cache = librispeech_features_dir is not None
-    if use_feature_cache:
-        libri_train = LibriSpeechFeatureDataset(
-            features_dir=librispeech_features_dir,
-        )
-        libri_collate = LibriSpeechFeatureDataset.collate_fn
-        print(f'[data] using precomputed LibriSpeech features: {librispeech_features_dir}',
-              flush=True)
-    else:
-        assert librispeech_dir is not None, \
-            'Either librispeech_features_dir or librispeech_dir must be set'
-        libri_train = LibriSpeechCharDataset(
-            librispeech_dir=librispeech_dir,
-            splits=['train-clean-100'],
-            text_transform=text_transform,
-        )
-        libri_collate = LibriSpeechCharDataset.collate_fn
-        print(f'[data] using raw LibriSpeech (no feature cache): {librispeech_dir}',
-              flush=True)
+    # LibriSpeech dataset (shared text_transform for consistent vocab)
+    libri_train = LibriSpeechCharDataset(
+        librispeech_dir=librispeech_dir,
+        splits=['train-clean-100'],
+        text_transform=text_transform,
+    )
 
     batch_size = cfg_training['batch_size']
 
@@ -185,7 +158,7 @@ def main(config_path: str) -> None:
         emg_train,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=4,
         pin_memory=True,
         collate_fn=EMGCharDataset.collate_fn,
         drop_last=True,
@@ -196,16 +169,14 @@ def main(config_path: str) -> None:
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        prefetch_factor=4,
-        persistent_workers=True,
-        collate_fn=libri_collate,
+        collate_fn=LibriSpeechCharDataset.collate_fn,
         drop_last=True,
     )
     val_loader = DataLoader(
         emg_val,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=2,
         pin_memory=True,
         collate_fn=EMGCharDataset.collate_fn,
     )
@@ -238,15 +209,11 @@ def main(config_path: str) -> None:
     # ---------------------------------------------------------------------------
     # W&B
     # ---------------------------------------------------------------------------
-    wandb_init_kwargs = {
-        'project': cfg_logging['wandb_project'],
-        'name': 'uml',
-        'config': cfg,
-        'mode': 'offline',
-    }
-    if cfg_logging.get('wandb_entity'):
-        wandb_init_kwargs['entity'] = cfg_logging['wandb_entity']
-    wandb.init(**wandb_init_kwargs)
+    wandb.init(
+        project=cfg_logging['wandb_project'],
+        name='uml',
+        config=cfg,
+    )
     wandb.watch(model, log_freq=200)
 
     # ---------------------------------------------------------------------------
@@ -290,39 +257,29 @@ def main(config_path: str) -> None:
             lengths   = emg_batch['lengths'].to(device)
             t_lengths = emg_batch['text_int_lengths'].to(device)
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                emg_out  = model.forward_emg(
-                    raw_emg,
-                    return_loss=True,
-                    targets=text_int,
-                    input_lengths=lengths,
-                    target_lengths=t_lengths,
-                )
+            emg_out  = model.forward_emg(
+                raw_emg,
+                return_loss=True,
+                targets=text_int,
+                input_lengths=lengths,
+                target_lengths=t_lengths,
+            )
             loss_emg = emg_out['loss']
 
             # Accumulate (divide by 2 for gradient accumulation over 2 sub-steps)
             (loss_emg / 2).backward()
 
             # ---- Step 2: Audio batch (AudioEncoder frozen internally) -------
-            audio_batch = next(audio_iter)
-            a_text_int  = audio_batch['text_int'].to(device)
-            a_t_lengths = audio_batch['text_int_lengths'].to(device)
+            audio_batch   = next(audio_iter)
+            waveform      = audio_batch['audio_features'].to(device)
+            a_text_int    = audio_batch['text_int'].to(device)
+            a_t_lengths   = audio_batch['text_int_lengths'].to(device)
+            audio_lengths = audio_batch['audio_lengths'].to(device)
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                if use_feature_cache:
-                    features     = audio_batch['features'].to(device)
-                    feat_lengths = audio_batch['feat_lengths'].to(device)
-                    audio_out = model.forward_audio_from_features(
-                        features, feat_lengths, a_text_int, a_t_lengths,
-                    )
-                else:
-                    waveform      = audio_batch['audio_features'].to(device)
-                    audio_lengths = audio_batch['audio_lengths'].to(device)
-                    audio_out = model.forward_audio(
-                        waveform, a_text_int, a_t_lengths,
-                        audio_lengths=audio_lengths,
-                    )
-            loss_audio = audio_out['loss']
+            audio_out = model.forward_audio(
+                waveform, a_text_int, a_t_lengths, audio_lengths=audio_lengths
+            )
+            loss_audio  = audio_out['loss']
 
             combined = lambda_uml * loss_audio
             (combined / 2).backward()

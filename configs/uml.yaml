@@ -1,28 +1,23 @@
 model:
-  model_size: 256
-  num_layers: 4
-  dropout: 0.1
+  model_size: 768
+  num_layers: 6
+  dropout: 0.2
 
 training:
-  batch_size: 32
+  batch_size: 8
   learning_rate: 3.0e-4
-  warmup_steps: 500
-  n_epochs: 60
+  warmup_steps: 1000
+  n_epochs: 200
   l2: 0.0
-  lr_milestones: [40, 50]
+  lr_milestones: [125, 150, 175]
   lr_gamma: 0.5
-  log_every_steps: 20
 
 data:
-  emg_data_dir:             /scratch/cr4206/data/emg_data/emg_data
-  emg_cache_dir:            /scratch/cr4206/data/emg_cache
-  librispeech_features_dir: /scratch/cr4206/data/librispeech_features
-  # Fallback (raw audio) — only used if librispeech_features_dir is removed:
-  # librispeech_dir: /scratch/cr4206/data/librispeech
+  emg_data_dir: /scratch/cr4206/data/emg_data/emg_data
+  librispeech_dir: /scratch/cr4206/data/librispeech
 
 logging:
-  wandb_entity: UMLforVideoLab
-  wandb_project: UMLvsBaseline
+  wandb_project: silent_speech_uml
   checkpoint_dir: /scratch/cr4206/checkpoints
 
 uml:

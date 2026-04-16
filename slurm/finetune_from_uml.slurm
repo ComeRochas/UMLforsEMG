@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=ssl_finetune
 #SBATCH --account=torch_pr_39_tandon_advanced
-#SBATCH --partition=h100_tandon
-#SBATCH --gres=gpu:h100:1
+#SBATCH --partition=l40s_public
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -62,26 +62,6 @@ export WANDB_DIR=${SCRATCH}/.cache/wandb
 export PIP_CACHE_DIR=${SCRATCH}/.cache/pip
 export WANDB_MODE=offline
 export PYTHONUNBUFFERED=1
-
-# ---------------------------------------------------------------------------
-# Pre-flight
-# ---------------------------------------------------------------------------
-for p in \
-    ${SCRATCH}/data/emg_cache/train.pt \
-    ${SCRATCH}/data/emg_cache/dev.pt \
-    ${UML_CKPT} ; do
-    if [ ! -e "$p" ]; then
-        echo "[preflight] MISSING: $p"
-        exit 1
-    fi
-done
-echo "[preflight] caches + UML checkpoint present."
-
-echo "[warm] touching caches to warm page cache"
-cat ${SCRATCH}/data/emg_cache/train.pt > /dev/null &
-cat ${SCRATCH}/data/emg_cache/dev.pt   > /dev/null &
-wait
-echo "[warm] done"
 
 # ---------------------------------------------------------------------------
 # Conda

@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=ssl_baseline
 #SBATCH --account=torch_pr_39_tandon_advanced
-#SBATCH --partition=h100_tandon
-#SBATCH --gres=gpu:h100:1
+#SBATCH --partition=l40s_public
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -62,30 +62,6 @@ export WANDB_DIR=${SCRATCH}/.cache/wandb
 export PIP_CACHE_DIR=${SCRATCH}/.cache/pip
 export WANDB_MODE=offline
 export PYTHONUNBUFFERED=1
-
-# ---------------------------------------------------------------------------
-# Pre-flight: fail fast if EMG cache is missing (rather than mid-training)
-# ---------------------------------------------------------------------------
-for p in \
-    ${SCRATCH}/data/emg_cache/train.pt \
-    ${SCRATCH}/data/emg_cache/dev.pt ; do
-    if [ ! -e "$p" ]; then
-        echo "[preflight] MISSING: $p"
-        echo "[preflight] run slurm/precompute_caches.slurm first."
-        exit 1
-    fi
-done
-echo "[preflight] EMG caches present."
-
-# ---------------------------------------------------------------------------
-# Warm page cache — stream the .pt files through kernel cache so the first
-# epoch doesn't stall on cold shared-FS reads on a fresh H100 node.
-# ---------------------------------------------------------------------------
-echo "[warm] touching caches to warm page cache"
-cat ${SCRATCH}/data/emg_cache/train.pt > /dev/null &
-cat ${SCRATCH}/data/emg_cache/dev.pt   > /dev/null &
-wait
-echo "[warm] done"
 
 # ---------------------------------------------------------------------------
 # Conda env lives in $SCRATCH to avoid exhausting $HOME file quota

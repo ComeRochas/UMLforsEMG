@@ -29,8 +29,6 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-# transformer.py (custom attention) is no longer used — SharedTransformer
-# now wraps nn.TransformerEncoderLayer directly for FlashAttention-2 dispatch.
 
 # ---------------------------------------------------------------------------
 # ResBlock (verbatim from Gaddy's architecture.py, minus absl.flags)
@@ -448,34 +446,6 @@ class UMLModel(nn.Module):
         x = self.transformer(x)
         log_probs = self.ctc_head(x)   # (B, T', vocab_size)
 
-        loss = self.ctc_head.compute_ctc_loss(
-            log_probs, targets, enc_lengths, target_lengths,
-            blank=self.blank_id,
-        )
-        return {'log_probs': log_probs, 'enc_lengths': enc_lengths, 'loss': loss}
-
-    # ------------------------------------------------------------------
-    # Audio branch — from precomputed wav2vec2 features (fast path)
-    # ------------------------------------------------------------------
-
-    def forward_audio_from_features(
-        self,
-        features: torch.Tensor,          # (B, T', 768) — wav2vec2 last_hidden_state
-        feat_lengths: torch.Tensor,       # (B,) valid frames in T'
-        targets: torch.Tensor,            # (B, L)
-        target_lengths: torch.Tensor,     # (B,)
-    ) -> dict:
-        """
-        Skip the frozen wav2vec2 forward entirely — apply only the trainable
-        projection + SharedTransformer + CTCHead on precomputed features.
-        Equivalent to forward_audio() when the cache was built from the same
-        wav2vec2 checkpoint.
-        """
-        x = self.audio_encoder.projection(features)   # (B, T', model_size)
-        x = self.transformer(x)
-        log_probs = self.ctc_head(x)
-
-        enc_lengths = feat_lengths.long().clamp(min=1, max=features.shape[1])
         loss = self.ctc_head.compute_ctc_loss(
             log_probs, targets, enc_lengths, target_lengths,
             blank=self.blank_id,
