@@ -174,6 +174,13 @@ def main(config_path: str, uml_checkpoint: str) -> None:
     wandb.init(**wandb_init_kwargs)
     wandb.watch(model, log_freq=200)
 
+    # Shared x-axes so baseline / UML / finetune runs overlay cleanly in wandb.
+    wandb.define_metric('epoch')
+    wandb.define_metric('emg_samples_seen')
+    wandb.define_metric('val/*',              step_metric='epoch')
+    wandb.define_metric('train/loss_epoch',   step_metric='epoch')
+    wandb.define_metric('train/loss',         step_metric='emg_samples_seen')
+
     # ---------------------------------------------------------------------------
     # Resume if a finetune checkpoint already exists
     # ---------------------------------------------------------------------------
@@ -230,7 +237,11 @@ def main(config_path: str, uml_checkpoint: str) -> None:
                     f'step={global_step} loss={loss.item():.4f} lr={lr:.2e}',
                     flush=True,
                 )
-                wandb.log({'train/loss': loss.item(), 'step': global_step})
+                wandb.log({
+                    'train/loss':        loss.item(),
+                    'emg_samples_seen':  global_step * batch_size,
+                    'step':              global_step,
+                })
 
         if epoch + 1 in milestones:
             lr_decay[0] *= gamma

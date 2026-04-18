@@ -7,7 +7,7 @@ training:
   batch_size: 64
   learning_rate: 3.0e-4
   warmup_steps: 500
-  n_epochs: 60
+  n_epochs: 200
   l2: 0.0
   lr_milestones: [40, 50]
   lr_gamma: 0.5

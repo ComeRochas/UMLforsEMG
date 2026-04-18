@@ -227,6 +227,13 @@ def main(config_path: str) -> None:
     wandb.watch(model, log_freq=200)
     print(f'[wandb] initialized project={cfg_logging["wandb_project"]}', flush=True)
 
+    # Shared x-axes so baseline / UML / finetune runs overlay cleanly in wandb.
+    wandb.define_metric('epoch')
+    wandb.define_metric('emg_samples_seen')
+    wandb.define_metric('val/*',              step_metric='epoch')
+    wandb.define_metric('train/loss_epoch',   step_metric='epoch')
+    wandb.define_metric('train/loss',         step_metric='emg_samples_seen')
+
     # ---------------------------------------------------------------------------
     # Resume from checkpoint if present
     # ---------------------------------------------------------------------------
@@ -287,7 +294,11 @@ def main(config_path: str) -> None:
                     f'lr={lr:.2e} elapsed={elapsed:.1f}s',
                     flush=True,
                 )
-                wandb.log({'train/loss': loss.item(), 'step': global_step})
+                wandb.log({
+                    'train/loss':        loss.item(),
+                    'emg_samples_seen':  global_step * batch_size,
+                    'step':              global_step,
+                })
 
         # Epoch-level LR decay — update the closure variable so LambdaLR
         # picks it up on the next warmup_sched.step() call.

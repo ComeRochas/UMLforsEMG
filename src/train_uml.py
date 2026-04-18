@@ -202,7 +202,19 @@ def main(config_path: str) -> None:
         dropout=cfg_model['dropout'],
     ).to(device)
 
-    lambda_uml = cfg_uml['lambda_uml']
+    # Mutable audio-loss state — the scalar is read per-batch below.
+    # If `lambda_patience > 0`, the scalar is halved (by `lambda_decay`) after
+    # `lambda_patience` epochs without a val_wer improvement of at least
+    # `lambda_tol`, down to `lambda_min`.  Off by default.
+    lambda_state = {
+        'value':         float(cfg_uml['lambda_uml']),
+        'best_wer':      float('inf'),
+        'stale_epochs':  0,
+        'patience':      int(cfg_uml.get('lambda_patience', 0)),
+        'decay':         float(cfg_uml.get('lambda_decay', 0.5)),
+        'min':           float(cfg_uml.get('lambda_min', 0.0)),
+        'tol':           float(cfg_uml.get('lambda_tol', 1e-3)),
+    }
 
     # ---------------------------------------------------------------------------
     # Optimizer  — AudioEncoder parameters are frozen; exclude them explicitly
@@ -231,6 +243,17 @@ def main(config_path: str) -> None:
     wandb.init(**wandb_init_kwargs)
     wandb.watch(model, log_freq=200)
 
+    # Shared x-axes so baseline / UML / finetune runs overlay cleanly in wandb.
+    wandb.define_metric('epoch')
+    wandb.define_metric('emg_samples_seen')
+    wandb.define_metric('val/*',                      step_metric='epoch')
+    wandb.define_metric('train/emg_loss_epoch',       step_metric='epoch')
+    wandb.define_metric('train/audio_loss_epoch',     step_metric='epoch')
+    wandb.define_metric('uml/lambda',                 step_metric='epoch')
+    wandb.define_metric('train/emg_loss',             step_metric='emg_samples_seen')
+    wandb.define_metric('train/audio_loss',           step_metric='emg_samples_seen')
+    wandb.define_metric('train/total_loss',           step_metric='emg_samples_seen')
+
     # ---------------------------------------------------------------------------
     # Resume
     # ---------------------------------------------------------------------------
@@ -243,7 +266,16 @@ def main(config_path: str) -> None:
         optimizer.load_state_dict(ckpt['optimizer'])
         start_epoch = ckpt['epoch'] + 1
         global_step = ckpt.get('global_step', 0)
-        print(f'[resume] starting from epoch {start_epoch}')
+        if 'lambda_state' in ckpt:
+            # Restore tunable keys from ckpt; keep config-driven knobs
+            # (patience / decay / min / tol) as whatever the current YAML says,
+            # so tweaking the config then resuming takes effect.
+            saved = ckpt['lambda_state']
+            for k in ('value', 'best_wer', 'stale_epochs'):
+                if k in saved:
+                    lambda_state[k] = saved[k]
+        print(f'[resume] starting from epoch {start_epoch} '
+              f'(lambda_uml={lambda_state["value"]:.3f})')
 
     # ---------------------------------------------------------------------------
     # Training
@@ -298,7 +330,7 @@ def main(config_path: str) -> None:
                 )
             loss_audio  = audio_out['loss']
 
-            combined = lambda_uml * loss_audio
+            combined = lambda_state['value'] * loss_audio
             (combined / 2).backward()
 
             # ---- Optimizer step after both sub-steps -----------------------
@@ -323,7 +355,8 @@ def main(config_path: str) -> None:
                 wandb.log({
                     'train/emg_loss':   loss_emg.item(),
                     'train/audio_loss': loss_audio.item(),
-                    'train/total_loss': loss_emg.item() + lambda_uml * loss_audio.item(),
+                    'train/total_loss': loss_emg.item() + lambda_state['value'] * loss_audio.item(),
+                    'emg_samples_seen': global_step * batch_size,
                     'step':             global_step,
                 })
 
@@ -337,27 +370,53 @@ def main(config_path: str) -> None:
 
         val_wer = evaluate(model, val_loader, text_transform, blank, device)
 
+        # Patience-based lambda decay (robust to noisy WER via lambda_tol).
+        # Disabled when patience == 0.
+        if lambda_state['patience'] > 0:
+            if val_wer < lambda_state['best_wer'] - lambda_state['tol']:
+                lambda_state['best_wer']     = val_wer
+                lambda_state['stale_epochs'] = 0
+            else:
+                lambda_state['stale_epochs'] += 1
+                if lambda_state['stale_epochs'] >= lambda_state['patience']:
+                    new_val = max(
+                        lambda_state['min'],
+                        lambda_state['value'] * lambda_state['decay'],
+                    )
+                    if new_val < lambda_state['value']:
+                        print(
+                            f'[lambda decay] val_wer stale for '
+                            f'{lambda_state["stale_epochs"]} epochs → '
+                            f'lambda_uml {lambda_state["value"]:.3f} → {new_val:.3f}',
+                            flush=True,
+                        )
+                        lambda_state['value'] = new_val
+                    lambda_state['stale_epochs'] = 0
+
         print(
             f'epoch {epoch+1}/{n_epochs}  '
             f'emg_loss={avg_emg:.4f}  '
             f'audio_loss={avg_audio:.4f}  '
-            f'val_wer={val_wer:.4f}'
+            f'val_wer={val_wer:.4f}  '
+            f'lambda={lambda_state["value"]:.3f}'
         )
         wandb.log({
-            'epoch':               epoch + 1,
+            'epoch':                  epoch + 1,
             'train/emg_loss_epoch':   avg_emg,
             'train/audio_loss_epoch': avg_audio,
-            'val/wer':             val_wer,
+            'val/wer':                val_wer,
+            'uml/lambda':             lambda_state['value'],
         })
 
         # Save checkpoint
         ckpt_data = {
-            'epoch':       epoch,
-            'global_step': global_step,
-            'model':       model.state_dict(),
-            'optimizer':   optimizer.state_dict(),
-            'val_wer':     val_wer,
-            'config':      cfg,
+            'epoch':        epoch,
+            'global_step':  global_step,
+            'model':        model.state_dict(),
+            'optimizer':    optimizer.state_dict(),
+            'val_wer':      val_wer,
+            'config':       cfg,
+            'lambda_state': lambda_state,
         }
         torch.save(ckpt_data, latest_ckpt)
 

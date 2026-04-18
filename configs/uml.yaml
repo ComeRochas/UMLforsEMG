@@ -7,7 +7,7 @@ training:
   batch_size: 32
   learning_rate: 3.0e-4
   warmup_steps: 500
-  n_epochs: 60
+  n_epochs: 200
   l2: 0.0
   lr_milestones: [40, 50]
   lr_gamma: 0.5
@@ -24,4 +24,13 @@ logging:
   checkpoint_dir: /scratch/cr4206/checkpoints
 
 uml:
-  lambda_uml: 0.5
+  lambda_uml: 1
+
+  # Patience-based lambda_uml decay.  When val_wer does not improve by at
+  # least `lambda_tol` for `lambda_patience` consecutive epochs, multiply
+  # `lambda_uml` by `lambda_decay` (floor at `lambda_min`).  Set
+  # `lambda_patience: 0` to disable.
+  lambda_patience: 10
+  lambda_decay:    0.5
+  lambda_min:      0.0
+  lambda_tol:      0.001
