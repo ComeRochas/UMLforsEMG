@@ -30,7 +30,7 @@ uml:
   # least `lambda_tol` for `lambda_patience` consecutive epochs, multiply
   # `lambda_uml` by `lambda_decay` (floor at `lambda_min`).  Set
   # `lambda_patience: 0` to disable.
-  lambda_patience: 10
+  lambda_patience: 0
   lambda_decay:    0.5
   lambda_min:      0.0
   lambda_tol:      0.001
